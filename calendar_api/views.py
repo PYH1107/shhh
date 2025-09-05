@@ -1,124 +1,72 @@
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from rest_framework import status
+from rest_framework import status, generics
+from rest_framework.views import APIView
 from django.utils.dateparse import parse_datetime
 from django.utils import timezone
 from datetime import datetime, timedelta
 from .models import CalendarEvent
 from .services import GoogleCalendarService
-from .serializers import CalendarEventSerializer
+from .serializers import CalendarEventSerializer, CalendarEventCreateSerializer
 import json
 
-google_service = GoogleCalendarService()
-
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def list_events(request):
-    try:
-        start_date = request.GET.get('start')
-        end_date = request.GET.get('end')
-        max_results = int(request.GET.get('max_results', 100))
+class EventListCreateView(generics.ListCreateAPIView):
+    serializer_class = CalendarEventSerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_queryset(self):
+        user = self.request.user
+        queryset = CalendarEvent.objects.filter(user=user)
         
-        time_min = None
-        time_max = None
+        start_date = self.request.query_params.get('start')
+        end_date = self.request.query_params.get('end')
         
         if start_date:
-            time_min = parse_datetime(start_date)
+            start_dt = parse_datetime(start_date)
+            if start_dt:
+                queryset = queryset.filter(start_datetime__gte=start_dt)
+        
         if end_date:
-            time_max = parse_datetime(end_date)
-            
-        if not time_min:
-            time_min = timezone.now()
-        if not time_max:
-            time_max = time_min + timedelta(days=30)
+            end_dt = parse_datetime(end_date)
+            if end_dt:
+                queryset = queryset.filter(start_datetime__lte=end_dt)
         
-        events = CalendarEvent.objects.filter(
-            user=request.user,
-            start_datetime__gte=time_min,
-            start_datetime__lte=time_max
-        )[:max_results]
-        
-        serializer = CalendarEventSerializer(events, many=True)
-        
-        return Response({
-            'events': serializer.data,
-            'count': events.count()
-        })
-        
-    except Exception as e:
-        return Response({
-            'error': f'Failed to list events: {str(e)}'
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def create_event(request):
-    try:
-        data = request.data
+        return queryset.order_by('start_datetime')
+    
+    def perform_create(self, serializer):
+        google_service = GoogleCalendarService()
+        event = serializer.save(user=self.request.user)
         
         event_data = {
-            'title': data.get('title', ''),
-            'description': data.get('description', ''),
-            'start_datetime': parse_datetime(data.get('start_datetime')),
-            'end_datetime': parse_datetime(data.get('end_datetime')),
-            'location': data.get('location', ''),
-            'is_all_day': data.get('is_all_day', False),
-            'calendar_id': data.get('calendar_id', 'primary'),
+            'title': event.title,
+            'description': event.description,
+            'start_datetime': event.start_datetime,
+            'end_datetime': event.end_datetime,
+            'location': event.location,
+            'is_all_day': event.is_all_day,
+            'calendar_id': event.calendar_id,
         }
         
-        local_event = CalendarEvent.objects.create(
-            user=request.user,
-            **event_data
-        )
-        
-        google_event = google_service.create_event(request.user, event_data)
-        
+        google_event = google_service.create_event(self.request.user, event_data)
         if google_event:
-            local_event.google_event_id = google_event['id']
-            local_event.synced_with_google = True
-            local_event.last_synced_at = timezone.now()
-            local_event.save()
-        
-        serializer = CalendarEventSerializer(local_event)
-        
-        return Response({
-            'message': 'Event created successfully',
-            'event': serializer.data
-        }, status=status.HTTP_201_CREATED)
-        
-    except Exception as e:
-        return Response({
-            'error': f'Failed to create event: {str(e)}'
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            event.google_event_id = google_event['id']
+            event.synced_with_google = True
+            event.last_synced_at = timezone.now()
+            event.save()
 
-@api_view(['GET', 'PUT', 'DELETE'])
-@permission_classes([IsAuthenticated])
-def event_detail(request, event_id):
-    try:
-        event = CalendarEvent.objects.get(id=event_id, user=request.user)
-    except CalendarEvent.DoesNotExist:
-        return Response({
-            'error': 'Event not found'
-        }, status=status.HTTP_404_NOT_FOUND)
+class EventDetailView(generics.RetrieveUpdateDestroyAPIView):
+    serializer_class = CalendarEventSerializer
+    permission_classes = [IsAuthenticated]
     
-    if request.method == 'GET':
-        serializer = CalendarEventSerializer(event)
-        return Response({'event': serializer.data})
+    def get_queryset(self):
+        return CalendarEvent.objects.filter(user=self.request.user)
     
-    elif request.method == 'PUT':
-        try:
-            data = request.data
-            
-            event.title = data.get('title', event.title)
-            event.description = data.get('description', event.description)
-            if data.get('start_datetime'):
-                event.start_datetime = parse_datetime(data.get('start_datetime'))
-            if data.get('end_datetime'):
-                event.end_datetime = parse_datetime(data.get('end_datetime'))
-            event.location = data.get('location', event.location)
-            event.is_all_day = data.get('is_all_day', event.is_all_day)
-            
+    def perform_update(self, serializer):
+        google_service = GoogleCalendarService()
+        event = serializer.save()
+        
+        if event.google_event_id:
             event_data = {
                 'title': event.title,
                 'description': event.description,
@@ -128,49 +76,51 @@ def event_detail(request, event_id):
                 'is_all_day': event.is_all_day,
             }
             
-            if event.google_event_id:
-                google_event = google_service.update_event(
-                    request.user, 
-                    event.google_event_id, 
-                    event_data,
-                    event.calendar_id
-                )
-                if google_event:
-                    event.synced_with_google = True
-                    event.last_synced_at = timezone.now()
-            
-            event.save()
-            
-            serializer = CalendarEventSerializer(event)
-            return Response({
-                'message': 'Event updated successfully',
-                'event': serializer.data
-            })
-            
-        except Exception as e:
-            return Response({
-                'error': f'Failed to update event: {str(e)}'
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            google_event = google_service.update_event(
+                self.request.user,
+                event.google_event_id,
+                event_data,
+                event.calendar_id
+            )
+            if google_event:
+                event.synced_with_google = True
+                event.last_synced_at = timezone.now()
+                event.save()
     
-    elif request.method == 'DELETE':
-        try:
-            if event.google_event_id:
-                google_service.delete_event(
-                    request.user, 
-                    event.google_event_id, 
-                    event.calendar_id
-                )
-            
-            event.delete()
-            
+    def perform_destroy(self, instance):
+        google_service = GoogleCalendarService()
+        if instance.google_event_id:
+            google_service.delete_event(
+                self.request.user,
+                instance.google_event_id,
+                instance.calendar_id
+            )
+        instance.delete()
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def list_calendars(request):
+    try:
+        google_service = GoogleCalendarService()
+        service = google_service.get_calendar_service(request.user)
+        
+        if not service:
             return Response({
-                'message': 'Event deleted successfully'
-            })
-            
-        except Exception as e:
-            return Response({
-                'error': f'Failed to delete event: {str(e)}'
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                'error': 'User not authenticated with Google'
+            }, status=status.HTTP_401_UNAUTHORIZED)
+        
+        calendar_list = service.calendarList().list().execute()
+        calendars = calendar_list.get('items', [])
+        
+        return Response({
+            'calendars': calendars,
+            'count': len(calendars)
+        })
+        
+    except Exception as e:
+        return Response({
+            'error': f'Failed to list calendars: {str(e)}'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
