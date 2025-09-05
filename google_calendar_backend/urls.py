@@ -16,8 +16,43 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path, include
+from django.http import JsonResponse
+from django.views.decorators.http import require_GET
+
+@require_GET
+def api_info(request):
+    return JsonResponse({
+        'message': 'Google Calendar Backend API',
+        'version': '1.0.0',
+        'endpoints': {
+            'authentication': {
+                'google_login': '/auth/google/',
+                'callback': '/auth/callback/',
+                'status': '/auth/status/',
+                'refresh': '/auth/refresh/',
+                'logout': '/auth/logout/',
+                'revoke': '/auth/revoke/'
+            },
+            'calendar': {
+                'events': '/api/events/',
+                'event_detail': '/api/events/<id>/',
+                'sync_events': '/api/sync/',
+                'calendars': '/api/calendars/'
+            },
+            'users': {
+                'profile': '/users/profile/',
+                'update_profile': '/users/profile/update/'
+            },
+            'admin': '/admin/'
+        },
+        'documentation': {
+            'authentication_flow': 'Start with /auth/google/ to get OAuth URL',
+            'note': 'Most endpoints require authentication'
+        }
+    })
 
 urlpatterns = [
+    path('', api_info, name='api_info'),
     path('admin/', admin.site.urls),
     path('auth/', include('authentication.urls')),
     path('api/', include('calendar_api.urls')),
