@@ -66,7 +66,7 @@ def google_callback(request):
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 def refresh_token(request):
     try:
         success = auth_service.refresh_user_token(request.user)

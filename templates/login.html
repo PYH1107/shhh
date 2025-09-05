@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Google Calendar Backend - 登入</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 50px auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .btn {
+            display: inline-block;
+            padding: 12px 20px;
+            background-color: #4285f4;
+            color: white;
+            text-decoration: none;
+            border-radius: 4px;
+            border: none;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        .btn:hover {
+            background-color: #357ae8;
+        }
+        .status {
+            margin: 20px 0;
+            padding: 10px;
+            border-radius: 4px;
+        }
+        .status.success {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .status.error {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .info {
+            background-color: #e3f2fd;
+            padding: 15px;
+            border-radius: 4px;
+            margin: 20px 0;
+        }
+        .endpoint {
+            background-color: #f8f9fa;
+            padding: 10px;
+            border-left: 4px solid #007bff;
+            margin: 10px 0;
+            font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🗓️ Google Calendar Backend API</h1>
+        
+        <div id="auth-status" class="status" style="display: none;"></div>
+        
+        <div class="info">
+            <h3>認證狀態</h3>
+            <p id="status-text">檢查中...</p>
+            <button id="check-status" class="btn" onclick="checkAuthStatus()">重新檢查狀態</button>
+        </div>
+        
+        <div id="login-section">
+            <h3>Google OAuth 登入</h3>
+            <p>點擊下方按鈕開始Google認證流程：</p>
+            <button id="login-btn" class="btn" onclick="initiateGoogleLogin()">🔐 使用 Google 登入</button>
+        </div>
+        
+        <div id="user-info" style="display: none;">
+            <h3>用戶資訊</h3>
+            <div id="user-details"></div>
+            <button class="btn" onclick="logout()" style="background-color: #dc3545;">登出</button>
+        </div>
+        
+        <div class="info">
+            <h3>可用的API端點</h3>
+            <div class="endpoint">GET /auth/status/ - 檢查認證狀態</div>
+            <div class="endpoint">GET /auth/google/ - 獲取Google認證URL</div>
+            <div class="endpoint">GET /api/events/ - 獲取日曆事件 (需認證)</div>
+            <div class="endpoint">POST /api/events/ - 創建事件 (需認證)</div>
+            <div class="endpoint">GET /api/calendars/ - 獲取日曆列表 (需認證)</div>
+            <div class="endpoint">POST /api/sync/ - 同步Google事件 (需認證)</div>
+        </div>
+        
+        <div class="info">
+            <h3>測試API</h3>
+            <button class="btn" onclick="testCors()">測試 CORS</button>
+            <button class="btn" onclick="testEvents()" id="test-events-btn" disabled>測試事件API</button>
+            <button class="btn" onclick="syncEvents()" id="sync-events-btn" disabled>同步Google事件</button>
+        </div>
+        
+        <div id="test-results" style="margin-top: 20px;"></div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:8000';
+        
+        // 檢查認證狀態
+        async function checkAuthStatus() {
+            try {
+                const response = await fetch(`${API_BASE}/auth/status/`, {
+                    credentials: 'include'
+                });
+                const data = await response.json();
+                
+                if (data.authenticated) {
+                    document.getElementById('status-text').textContent = '✅ 已登入';
+                    document.getElementById('login-section').style.display = 'none';
+                    document.getElementById('user-info').style.display = 'block';
+                    document.getElementById('test-events-btn').disabled = false;
+                    document.getElementById('sync-events-btn').disabled = false;
+                    
+                    document.getElementById('user-details').innerHTML = `
+                        <p><strong>用戶名:</strong> ${data.user.username}</p>
+                        <p><strong>郵箱:</strong> ${data.user.email}</p>
+                        <p><strong>姓名:</strong> ${data.user.first_name} ${data.user.last_name}</p>
+                        <p><strong>Google認證:</strong> ${data.user.is_google_authenticated ? '✅' : '❌'}</p>
+                        ${data.user.google_email ? `<p><strong>Google郵箱:</strong> ${data.user.google_email}</p>` : ''}
+                    `;
+                } else {
+                    document.getElementById('status-text').textContent = '❌ 未登入';
+                    document.getElementById('login-section').style.display = 'block';
+                    document.getElementById('user-info').style.display = 'none';
+                    document.getElementById('test-events-btn').disabled = true;
+                    document.getElementById('sync-events-btn').disabled = true;
+                }
+            } catch (error) {
+                document.getElementById('status-text').textContent = '❌ 檢查狀態失敗: ' + error.message;
+            }
+        }
+        
+        // 開始Google登入流程
+        async function initiateGoogleLogin() {
+            try {
+                const response = await fetch(`${API_BASE}/auth/google/`, {
+                    credentials: 'include'
+                });
+                const data = await response.json();
+                
+                if (data.auth_url) {
+                    window.location.href = data.auth_url;
+                }
+            } catch (error) {
+                showStatus('獲取認證URL失敗: ' + error.message, 'error');
+            }
+        }
+        
+        // 登出
+        async function logout() {
+            try {
+                const response = await fetch(`${API_BASE}/auth/logout/`, {
+                    method: 'POST',
+                    credentials: 'include'
+                });
+                const data = await response.json();
+                
+                if (response.ok) {
+                    showStatus('成功登出', 'success');
+                    checkAuthStatus();
+                }
+            } catch (error) {
+                showStatus('登出失敗: ' + error.message, 'error');
+            }
+        }
+        
+        // 測試CORS
+        async function testCors() {
+            try {
+                const response = await fetch(`${API_BASE}/cors-test/`, {
+                    credentials: 'include'
+                });
+                const data = await response.json();
+                
+                document.getElementById('test-results').innerHTML = `
+                    <h4>CORS測試結果:</h4>
+                    <pre>${JSON.stringify(data, null, 2)}</pre>
+                `;
+            } catch (error) {
+                document.getElementById('test-results').innerHTML = `
+                    <h4>CORS測試失敗:</h4>
+                    <p style="color: red;">${error.message}</p>
+                `;
+            }
+        }
+        
+        // 測試事件API
+        async function testEvents() {
+            try {
+                const response = await fetch(`${API_BASE}/api/events/`, {
+                    credentials: 'include'
+                });
+                const data = await response.json();
+                
+                document.getElementById('test-results').innerHTML = `
+                    <h4>事件列表:</h4>
+                    <pre>${JSON.stringify(data, null, 2)}</pre>
+                `;
+            } catch (error) {
+                document.getElementById('test-results').innerHTML = `
+                    <h4>獲取事件失敗:</h4>
+                    <p style="color: red;">${error.message}</p>
+                `;
+            }
+        }
+        
+        // 同步Google事件
+        async function syncEvents() {
+            try {
+                const response = await fetch(`${API_BASE}/api/sync/`, {
+                    method: 'POST',
+                    credentials: 'include'
+                });
+                const data = await response.json();
+                
+                document.getElementById('test-results').innerHTML = `
+                    <h4>同步結果:</h4>
+                    <pre>${JSON.stringify(data, null, 2)}</pre>
+                `;
+            } catch (error) {
+                document.getElementById('test-results').innerHTML = `
+                    <h4>同步失敗:</h4>
+                    <p style="color: red;">${error.message}</p>
+                `;
+            }
+        }
+        
+        function showStatus(message, type) {
+            const statusEl = document.getElementById('auth-status');
+            statusEl.textContent = message;
+            statusEl.className = `status ${type}`;
+            statusEl.style.display = 'block';
+            
+            setTimeout(() => {
+                statusEl.style.display = 'none';
+            }, 3000);
+        }
+        
+        // 頁面載入時檢查認證狀態
+        window.onload = function() {
+            checkAuthStatus();
+        };
+    </script>
+</body>
+</html>
